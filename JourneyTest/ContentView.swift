@@ -2,7 +2,7 @@ import SwiftUI
 import SwiftData
 
 struct ContentView: View {
-    let totalJourneyDistance: Double = 100              // fake total distance
+    let totalJourneyDistance = JourneyProgress.totalJourneyDistance
 
     @State private var healthKitManager = HealthKitManager()
     @Environment(\.scenePhase) private var scenePhase
@@ -19,6 +19,7 @@ struct ContentView: View {
                 .font(.title)
 
             GeometryReader { geometry in
+                
                 ZStack(alignment: .leading) {
                     Rectangle()
                         .fill(Color.gray.opacity(0.3))
