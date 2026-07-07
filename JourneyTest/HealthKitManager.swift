@@ -19,6 +19,12 @@ final class HealthKitManager {
     private var distanceObserverQuery: HKObserverQuery?
     private var isObservingUpdates = false
 
+    // Fires whenever a distance fetch completes, whether triggered by a
+    // one-time query (launch, Refresh, foreground) or a background observer.
+    // Lets callers (e.g. a SwiftData-backed journey total) react without
+    // this class needing to know anything about persistence.
+    var onDistanceUpdate: (() -> Void)?
+
     func requestAuthorization() {
         guard HKHealthStore.isHealthDataAvailable() else {
             statusMessage = "Health data isn't available on this device."
@@ -103,6 +109,16 @@ final class HealthKitManager {
 
         fetchSum(for: distanceType, predicate: predicate, unit: .mile()) { [weak self] total in
             self?.distanceMiles = total ?? 0
+            self?.onDistanceUpdate?()
+        }
+    }
+
+    // Distance walked/run between an arbitrary start date and now — used to
+    // reconcile a persisted running total rather than "today only".
+    func fetchDistance(since startDate: Date, completion: @escaping (Double) -> Void) {
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: Date(), options: .strictStartDate)
+        fetchSum(for: distanceType, predicate: predicate, unit: .mile()) { total in
+            completion(total ?? 0)
         }
     }
 
@@ -118,6 +134,16 @@ final class HealthKitManager {
             options: .cumulativeSum
         ) { [weak self] _, statistics, error in
             Task { @MainActor in
+                // For statistics queries, HealthKit represents "no samples
+                // matched this predicate" as an .errorNoData error rather than
+                // a nil sum. That's a normal, expected outcome (e.g. an empty
+                // date range, or genuinely zero activity) — not a real failure,
+                // so we treat it as zero instead of surfacing a scary message.
+                if let hkError = error as? HKError, hkError.code == .errorNoData {
+                    completion(0)
+                    return
+                }
+
                 if let error {
                     self?.statusMessage = "Couldn't read Health data: \(error.localizedDescription)"
                     completion(nil)
