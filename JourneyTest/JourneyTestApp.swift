@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SwiftData
 
 @main
 struct JourneyTestApp: App {
@@ -13,5 +14,6 @@ struct JourneyTestApp: App {
         WindowGroup {
             ContentView()
         }
+        .modelContainer(for: JourneyProgress.self)
     }
 }
