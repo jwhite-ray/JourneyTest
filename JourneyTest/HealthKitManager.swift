@@ -122,6 +122,15 @@ final class HealthKitManager {
         }
     }
 
+    // Steps taken between an arbitrary start date and now — used to reconcile
+    // a persisted running total rather than "today only".
+    func fetchSteps(since startDate: Date, completion: @escaping (Int) -> Void) {
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: Date(), options: .strictStartDate)
+        fetchSum(for: stepType, predicate: predicate, unit: .count()) { total in
+            completion(Int(total ?? 0))
+        }
+    }
+
     private func fetchSum(
         for quantityType: HKQuantityType,
         predicate: NSPredicate,

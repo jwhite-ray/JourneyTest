@@ -12,7 +12,13 @@ import SwiftData
 struct JourneyTestApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            TabView {
+                JourneyMapView()
+                    .tabItem { Label("Journey", systemImage: "map") }
+
+                ContentView()
+                    .tabItem { Label("HealthKit", systemImage: "heart.text.square") }
+            }
         }
         .modelContainer(for: JourneyProgress.self)
     }
