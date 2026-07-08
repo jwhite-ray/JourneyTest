@@ -4,10 +4,20 @@ import SwiftData
 struct ContentView: View {
     let totalJourneyDistance = JourneyProgress.totalJourneyDistance
 
-    @State private var healthKitManager = HealthKitManager()
+    @Environment(HealthKitManager.self) private var healthKitManager
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @Query private var journeyProgresses: [JourneyProgress]
+
+    // Guards against overlapping syncJourneyProgress() calls. Without this,
+    // the initial fetchTodayTotals() plus each observer query's initial fire
+    // (HealthKit always fires observers once immediately) can all read the
+    // same stale journey.lastUpdated before any of them finish, and each
+    // independently adds its own delta on top — triple-counting the same
+    // distance. Serializing to one in-flight sync at a time fixes this
+    // without losing data: a skipped call's range is simply picked up by
+    // the next trigger (foreground, observer, or Refresh).
+    @State private var isSyncingJourney = false
 
     private var distanceTraveled: Double {
         journeyProgresses.first?.totalDistance ?? 0
@@ -37,7 +47,7 @@ struct ContentView: View {
             Text("\(Int(distanceTraveled)) / \(Int(totalJourneyDistance)) miles")
 
             Button("Simulate Walking 5 Miles") {
-                let journey = currentJourney()
+                let journey = JourneyProgress.current(from: journeyProgresses, in: modelContext)
                 journey.totalDistance = min(journey.totalDistance + 5, totalJourneyDistance)
                 journey.lastUpdated = Date()
                 try? modelContext.save()
@@ -70,8 +80,15 @@ struct ContentView: View {
             // point, so the UI shows the persisted total immediately. Then we
             // reconcile with HealthKit in case background updates were missed
             // while the app was closed.
+            //
+            // requestAuthorization() is now idempotent (shared across tabs),
+            // so if the other tab already consumed it, it's a no-op here and
+            // won't trigger a fetch. Explicitly fetch after wiring up
+            // onDistanceUpdate so this tab always gets its own reconcile on
+            // appear, regardless of which tab happened to request auth first.
             healthKitManager.onDistanceUpdate = { syncJourneyProgress() }
             healthKitManager.requestAuthorization()
+            healthKitManager.fetchTodayTotals()
         }
         .onChange(of: scenePhase) { _, newPhase in
             // Catch-up query: whenever the app comes to the foreground, do a
@@ -87,33 +104,28 @@ struct ContentView: View {
         distanceTraveled / totalJourneyDistance
     }
 
-    // Finds the single persisted journey record, creating it on first launch.
-    private func currentJourney() -> JourneyProgress {
-        if let existing = journeyProgresses.first {
-            return existing
-        }
-        let created = JourneyProgress()
-        modelContext.insert(created)
-        return created
-    }
-
     // Called whenever HealthKit reports an updated distance value (from a
     // one-time query or a background observer). Adds only the distance
     // accrued since the journey was last reconciled, so the running total
     // accumulates across days instead of resetting like "today's" distance.
     private func syncJourneyProgress() {
-        let journey = currentJourney()
+        guard !isSyncingJourney else { return }
+        isSyncingJourney = true
+
+        let journey = JourneyProgress.current(from: journeyProgresses, in: modelContext)
         let since = journey.lastUpdated
 
         healthKitManager.fetchDistance(since: since) { delta in
             journey.totalDistance = min(journey.totalDistance + delta, totalJourneyDistance)
             journey.lastUpdated = Date()
             try? modelContext.save()
+            isSyncingJourney = false
         }
     }
 }
 
 #Preview {
     ContentView()
+        .environment(HealthKitManager())
         .modelContainer(for: JourneyProgress.self, inMemory: true)
 }

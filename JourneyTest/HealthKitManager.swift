@@ -18,6 +18,7 @@ final class HealthKitManager {
     private var stepObserverQuery: HKObserverQuery?
     private var distanceObserverQuery: HKObserverQuery?
     private var isObservingUpdates = false
+    private var hasRequestedAuthorization = false
 
     // Fires whenever a distance fetch completes, whether triggered by a
     // one-time query (launch, Refresh, foreground) or a background observer.
@@ -26,6 +27,12 @@ final class HealthKitManager {
     var onDistanceUpdate: (() -> Void)?
 
     func requestAuthorization() {
+        // Now that a single HealthKitManager is shared across every tab, each
+        // tab's onAppear still calls this — guard so we don't re-request
+        // authorization or kick off a duplicate fetchTodayTotals() per tab.
+        guard !hasRequestedAuthorization else { return }
+        hasRequestedAuthorization = true
+
         guard HKHealthStore.isHealthDataAvailable() else {
             statusMessage = "Health data isn't available on this device."
             return

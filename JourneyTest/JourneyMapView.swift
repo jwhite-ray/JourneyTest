@@ -25,7 +25,7 @@ struct JourneyMapView: View {
 
     let totalJourneyDistance = JourneyProgress.totalJourneyDistance
 
-    @State private var healthKitManager = HealthKitManager()
+    @Environment(HealthKitManager.self) private var healthKitManager
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.modelContext) private var modelContext
     @Query private var journeyProgresses: [JourneyProgress]
@@ -103,23 +103,11 @@ struct JourneyMapView: View {
         }
     }
 
-    // Finds the single persisted journey record, creating it (with a fresh
-    // startDate) on first use if none exists yet.
-    private func currentJourney() -> JourneyProgress {
-        if let existing = journeyProgresses.first {
-            return existing
-        }
-        let created = JourneyProgress()
-        modelContext.insert(created)
-        try? modelContext.save()
-        return created
-    }
-
     // Asks HealthKit directly for steps since the journey's startDate, so the
     // displayed total always matches HealthKit's own truth — no local
     // accumulation to drift out of sync.
     private func refreshStepsWalked() {
-        let journey = currentJourney()
+        let journey = JourneyProgress.current(from: journeyProgresses, in: modelContext)
         healthKitManager.fetchSteps(since: journey.startDate) { total in
             stepsWalked = min(total, Self.totalSteps)
         }
@@ -171,5 +159,6 @@ struct JourneyMapView: View {
 
 #Preview {
     JourneyMapView()
+        .environment(HealthKitManager())
         .modelContainer(for: JourneyProgress.self, inMemory: true)
 }

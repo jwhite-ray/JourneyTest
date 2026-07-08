@@ -22,4 +22,18 @@ final class JourneyProgress {
         self.lastUpdated = lastUpdated
         self.startDate = startDate
     }
+
+    // Finds the single persisted journey record, creating it (and saving
+    // immediately) on first use if none exists yet. Shared by every screen
+    // that reads/writes journey progress so there's exactly one get-or-create
+    // implementation instead of divergent copies per view.
+    static func current(from journeyProgresses: [JourneyProgress], in modelContext: ModelContext) -> JourneyProgress {
+        if let existing = journeyProgresses.first {
+            return existing
+        }
+        let created = JourneyProgress()
+        modelContext.insert(created)
+        try? modelContext.save()
+        return created
+    }
 }
