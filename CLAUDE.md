@@ -1,3 +1,13 @@
+# ⛔ DEPRECATED REPO — DO NOT WORK HERE
+
+**This repo (JourneyTest) is retired by Justin's explicit ruling (July 2026). The real project lives at `~/Desktop/JourneyTracker` → [github.com/jwhite-ray/JourneyTracker](https://github.com/jwhite-ray/JourneyTracker).**
+
+If a session opens in this directory: stop, say so, and do all work against `~/Desktop/JourneyTracker` instead. Do not create code, docs, tickets, branches, or PRs from this repo. Do not treat its code or docs as current — they are a stale early prototype (the map epic's Phase 0 landed here by mistake and had to be ported). The Jira board (KAN) and its doc mirrors track JourneyTracker only.
+
+Everything below is kept for historical reference and is superseded by JourneyTracker's own CLAUDE.md.
+
+---
+
 # JourneyTracker — Team Workflow
 
 An iOS/watchOS app that turns real walking into visible progress along real-world or fantasy journeys. This project uses a team of specialized subagents. Follow this workflow.
