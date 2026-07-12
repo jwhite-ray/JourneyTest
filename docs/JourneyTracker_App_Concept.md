@@ -80,6 +80,7 @@ These numbers live in journey *data* (a bundled JSON file or SwiftData records),
 | **Multiple journeys** | Decided | User runs more than one journey, switches between them, keeps a history of completed ones | "There is only one journey, ever" (a singleton) | Model `Journey` as a list, with `isActive` per journey. Costs nothing today, avoids a rewrite. |
 | **Multiple simultaneous journeys** | Decided | Yes — a user can run several journeys at once (e.g. Ember Spire and Around the World together) | Assuming only one journey can ever be "active" at a time | The delta-based update above: one shared "last processed distance" anchor, applied to every active journey's own accumulated total. |
 | **Journey types** | Decided | Fantasy illustrated path today; real-world MapKit routes later | Baking "progress = position on my custom image" into the core progress logic | Keep "distance accumulated" and "how that's visualized" as separate concerns. The map screen reads progress; it doesn't own it. |
+| **Fantasy map rendering** | Decided | The signature faceted map; zoom/pan; more journeys later | Hand-placing glyphs; fractional-of-screen coordinates; a per-glyph view hierarchy; the map computing its own progress | Author as region records + a deterministic seed; one logical map-unit space + a single camera transform; a single culled SwiftUI `Canvas` pass. See "The fantasy map" section below. |
 | **Activity data source** | Decided | Cycling, swimming, wheelchair distance, manual entry for offline days | Hardcoding "distance = HealthKit walking/running distance" deep in many places | Wrap HealthKit access in one small "distance provider." Everything else calls that, not HealthKit directly. |
 | **Units** | Decided | Users outside the US expecting km | Hardcoding "miles" into display strings | Store distance in **meters** internally, always. Format for display in one place based on locale. |
 | **Journey content** | Decided | New journeys added without an app update; eventually user-created routes | Waypoints hardcoded as Swift literals scattered in view code | Define waypoints as structured data (a small JSON file or SwiftData records), even if bundled locally for now. |
@@ -117,14 +118,69 @@ Each `Journey` holds a `theme: JourneyTheme`. Views read colors and image names 
 
 **Open question for Jake:** the design system notes that Deepdark mode can be triggered "inside cave milestones" — i.e. the journey's current waypoint drives appearance. That's a third thing, neither a global token nor a static per-journey theme. Decide whether `JourneyTheme` gains an optional per-waypoint override before anyone implements waypoint-driven appearance.
 
+## The fantasy map: faceted cartography system
+
+The fantasy-journey map is the app's signature surface, and it has enough moving parts to earn its own decisions here. The **visual** style of the terrain — facet recipes, color triads, glyph sizes, the fixed back-to-front draw order — lives in `docs/DESIGN_SYSTEM.md` (Jeff owns it, and is adding the terrain section there in parallel). This section owns the **behavior, data, and architecture** underneath that style: how a map is authored, what coordinate space it lives in, how it's drawn, and how the camera moves. Where the two meet they cross-reference; neither restates the other.
+
+Real-world journeys (Around the World, a specific trail) are a *separate* visualization and will use MapKit when built — see the Journey types row. Everything below is the **custom fantasy** renderer. Camera behavior (zoom, pan, framing) should feel consistent across both kinds of journey.
+
+**Decided: a map is authored as a short list of REGION records plus a deterministic seed — never as hand-placed glyphs.**
+
+A range, a forest, a river, a lake, a coastline, a village site are each one *region record* describing a shape and a few parameters (extent, density, jitter, edge feathering) in map units. A seeded procedural scatter generator expands those regions into the hundreds of tiny glyph placements the style calls for (a forest is dozens of scattered trees, a range is many small peaks, a village is a tight cluster of homes — the visual recipes are Jeff's).
+
+- *Trap:* authoring a map by placing individual glyphs by hand. It doesn't scale, it can't be re-tuned, and it can't be validated. Explicitly rejected.
+- *Mitigation:* author regions; generate glyphs.
+- **Determinism is a hard requirement.** The same regions + the same seed must produce identical placements on every launch and every device. The generator is a pure function of `(regions, seed)` — no wall-clock, no `Date()`, no unseeded RNG. A map that reshuffles between launches is a bug. This also lets the map stay stable across a user's iCloud devices without syncing any glyph positions: only the small authoring input travels, and each device regenerates the same map.
+
+**Decided: placement rules are build-time validators, not runtime conventions.**
+
+The design session fixed logical constraints on how terrain relates: rivers start off-screen or in mountains and terminate in a lake or at the coastline (never mid-land, never continuing under the ocean fill); roads and the trek path stay on land and never cross a lake or ocean; settlements sit near water (river bank, lake shore, coast). These are checked when a map is authored/generated, and a violation **fails authoring, not the render**.
+
+- *Trap:* checking these at runtime and drawing a "best-effort" broken map, or trusting authors to remember them.
+- *Mitigation:* a validator over the region set and its generated placement, so a map that breaks a rule is an authoring error the author fixes. The shipped map is correct by construction.
+
+**Decided: each journey has a fixed logical map-unit coordinate space; rendering applies one camera transform.**
+
+Waypoints, regions, and the trek path are all authored in *map units* — the journey's own logical coordinate space — not as a fraction of the screen. A map may be far larger than the screen. Rendering maps logical units → screen points through a single camera transform (translate + scale).
+
+- *Trap:* the current placeholder in `JourneyMapView.swift`, which places waypoints as fractions of the container (`waypoint.x * geometry.size.width`, `y * geometry.size.height`). That can't zoom, can't exceed the screen, and ties layout to device size. **This decision supersedes that placeholder.**
+- *Mitigation:* one map-unit space per journey (its bounds are journey data), one camera transform at draw time.
+
+**Decided: terrain is drawn in a single-pass SwiftUI `Canvas`, visible-rect culled; no per-glyph view hierarchy.**
+
+Hundreds of glyphs cannot each be a SwiftUI `View` — layout and diffing would collapse. The terrain is one `Canvas` that draws the generated glyphs in the design system's fixed back-to-front order, culling anything outside the current visible rect. Terrain is fully **static** — it does not animate and does not change once generated; only the marker and the camera move. So the generated glyph set is produced once per map (per LOD bucket) and redrawn cheaply.
+
+- *Trap:* a `ZStack`/`ForEach` of glyph views, or animating the terrain.
+- *Mitigation:* one culled `Canvas` pass; all motion lives in the marker and the camera.
+
+**Decided: the camera supports pinch-zoom and pan, defaults to a "chapter view," and thins density as it zooms out (LOD).**
+
+- Gesture: pinch zoom and pan, backed by `UIScrollView` (via a representable) for correct momentum, bounce, and zoom feel.
+- Default framing = **chapter view**: the current leg only (last waypoint reached → next waypoint), marker centered. A toggle switches to a **full-journey overview**.
+- **LOD:** as zoom decreases, each glyph's *on-screen* size stays roughly constant while the scatter *density* thins. Zooming out keeps masses reading as textured terrain — never collapsing to dust, never popping into a few large icons.
+- *Rationale — why the camera is not optional:* a day's walking is on the order of 0.2% of Ember Spire's 1,800 miles. Framed to the whole journey, a day's progress is sub-pixel and the marker never visibly moves — the core motivation loop dies. Chapter view makes daily progress legible. This is *why* the map-unit space and camera exist at all.
+
+**Decided: the map reads progress; it never owns or computes it.**
+
+This reinforces the Journey types row. The marker's position along the trek path is a pure function of the journey's distance-based progress (`distanceAccumulated / totalDistance`, per "The one assumption that matters most" and the Progress metric section). The map has no distance math of its own — no steps, no per-view constants. The current placeholder violates this (it drives the marker off a HealthKit step count plus a unitless distance literal); that is drift to remove, not a pattern to copy.
+
+**Phased delivery — epic KAN-16.** Each phase is gated on Justin's visual approval before the next begins:
+
+- **P1** — a hand-placed `Canvas` specimen that proves the faceted look (one screen, static, no generator). Validates the aesthetic cheaply before building machinery. Hand-placement here is a deliberate one-off proof, not the authoring model.
+- **P2** — the seeded generator plus a **persistent** tuning harness: an authoring tool with live knobs for density, jitter, feather, and seed. The harness stays in the repo as the map-authoring surface; it is *not* throwaway like a `Mockups/` variant.
+- **P3** — camera, LOD, and performance: UIScrollView-backed zoom/pan, chapter-view framing, density-thinning LOD, `Canvas` culling.
+- **P4** — the real Ember Spire map, authored as regions + seed, replacing the `JourneyMapView` placeholder and wired to distance-based progress.
+
+**Naming.** The design session's sample map used a placeholder proper noun lifted from a well-known source; it must **never** ship. All map content uses original names — see the naming section (Ember Spire, Thistledown, Crosswater, and the rest).
+
 ## What's actually built today
 
 The current code is a prototype. Treat everything else in this document as a plan.
 
 - A single `JourneyProgress` SwiftData model, fetched as a de-facto singleton (`journeyProgresses.first`). **This is the singleton the doc says not to build** — it should become `Journey` + `JourneyProgress` when the multi-journey work lands.
 - `HealthKitManager` with one-time reads and background delivery.
-- A `JourneyMapView` with progress driven partly by a step count and partly by a unitless distance constant.
-- **Not built:** `Journey`, `Character`, `Waypoint`, `JourneyTheme`, `sourceDevice`, `isPremium`, App Group container, CloudKit compatibility, String Catalog, meters as the canonical unit.
+- A `JourneyMapView` prototype: waypoints placed as fractions of the screen (0…1 × `geometry.size`) and a marker driven partly by a HealthKit step count and partly by a unitless distance constant. Both are drift, and both are superseded by "The fantasy map" section — fractional coordinates give way to a map-unit space plus a camera transform, and the step-driven marker gives way to distance-based progress. This placeholder is *replaced* in phase P4 of epic KAN-16, not patched in place.
+- **Not built:** `Journey`, `Character`, `Waypoint`, `JourneyTheme`, `sourceDevice`, `isPremium`, App Group container, CloudKit compatibility, String Catalog, meters as the canonical unit, and the entire faceted cartography system (region authoring, seeded generator + tuning harness, map-unit space, `Canvas` renderer, camera/LOD — epic KAN-16, phases P1–P4).
 
 ## What NOT to worry about yet
 
@@ -140,11 +196,17 @@ All properties need inline default values and optional relationships to stay Clo
 - `distanceAccumulated` — meters
 - `startDate` (UTC), `isActive`, `isCompleted`, `isPremium`
 - `theme`, relationship to its waypoints
+- for `fantasy` journeys, a reference to its map authoring data (map-unit bounds + region records + scatter seed — see below)
 
 **Waypoint**
-- `id`, `order`, `position` (image-relative x/y, or lat/long)
+- `id`, `order`, `position` — **map units** for fantasy journeys (the journey's logical coordinate space, per "The fantasy map"), lat/long for real-world journeys. *Not* a fraction of the screen.
 - `distanceFromStart` — meters
 - `name`, `descriptionText` (for future notifications)
+
+**Map authoring data** (fantasy journeys only — the input to the seeded scatter generator)
+- the journey's map-unit `bounds` (its logical coordinate space) and a single scatter `seed`
+- an ordered list of **MapRegion** records: `kind` (range / forest / river / lake / coast / groundCover / settlement / road / trekPath), a shape spec in map units (blob or ellipse extent; river source→mouth; village site; path polyline), and scatter parameters (density, jitter, feather)
+- This is *static authored content*, not user-mutable state. It travels with the bundled journey definition (JSON), the generator expands it to glyphs deterministically at load, and — unlike `Journey` / `Waypoint` / `ProgressUpdate` — it does **not** need to be a CloudKit-synced SwiftData model. Nothing here changes as the user walks; only the marker's position (read from progress) does.
 
 **Character**
 - `id`, `name`, `assetName`, `descriptionText`
